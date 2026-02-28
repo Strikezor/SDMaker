@@ -125,27 +125,37 @@ def get_groq_response(system_content, user_content, api_key):
         return None
 
 # --- File Processing Helpers ---
-def extract_text_from_file(uploaded_file):
-    if uploaded_file is None:
+def extract_text_from_files(uploaded_files):
+    """Extracts and concatenates text from a list of txt, pdf, or docx files."""
+    if not uploaded_files:
         return ""
-    file_extension = uploaded_file.name.split('.')[-1].lower()
-    try:
-        if file_extension == 'txt':
-            stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
-            return stringio.read()
-        elif file_extension == 'pdf':
-            reader = PyPDF2.PdfReader(uploaded_file)
-            text_blocks = [page.extract_text() for page in reader.pages if page.extract_text()]
-            return "\n".join(text_blocks)
-        elif file_extension == 'docx':
-            doc = docx.Document(uploaded_file)
-            return "\n".join([para.text for para in doc.paragraphs])
-        else:
-            st.error(f"Unsupported file type: {file_extension}")
-            return ""
-    except Exception as e:
-        st.error(f"Error reading {uploaded_file.name}: {e}")
-        return ""
+    
+    # If a single file is passed by mistake, make it a list
+    if not isinstance(uploaded_files, list):
+        uploaded_files = [uploaded_files]
+        
+    combined_text = ""
+    for uploaded_file in uploaded_files:
+        file_extension = uploaded_file.name.split('.')[-1].lower()
+        combined_text += f"\n\n--- Content from {uploaded_file.name} ---\n\n"
+        
+        try:
+            if file_extension == 'txt':
+                stringio = io.StringIO(uploaded_file.getvalue().decode("utf-8"))
+                combined_text += stringio.read()
+            elif file_extension == 'pdf':
+                reader = PyPDF2.PdfReader(uploaded_file)
+                text_blocks = [page.extract_text() for page in reader.pages if page.extract_text()]
+                combined_text += "\n".join(text_blocks)
+            elif file_extension == 'docx':
+                doc = docx.Document(uploaded_file)
+                combined_text += "\n".join([para.text for para in doc.paragraphs])
+            else:
+                st.error(f"Unsupported file type: {file_extension}")
+        except Exception as e:
+            st.error(f"Error reading {uploaded_file.name}: {e}")
+            
+    return combined_text.strip()
 
 def load_template_xml(filepath="template.xml"):
     try:
@@ -257,12 +267,12 @@ st.info("ℹ️ SD Template structure is automatically loaded from `template.xml
 
 colA, colB = st.columns(2)
 with colA:
-    reg_file = st.file_uploader("Upload Regulatory Document", type=['txt', 'pdf', 'docx'], key="reg_file")
+    reg_files = st.file_uploader("Upload Regulatory Document(s)", type=['txt', 'pdf', 'docx'], key="reg_file", accept_multiple_files=True)
 with colB:
-    brd_file = st.file_uploader("Upload BRD / URF Document", type=['txt', 'pdf', 'docx'], key="brd_file")
+    brd_files = st.file_uploader("Upload BRD / URF Document(s)", type=['txt', 'pdf', 'docx'], key="brd_file", accept_multiple_files=True)
 
 st.markdown("---")
-add_file = st.file_uploader("Upload Additional Document (Supporting - Optional)", type=['txt', 'pdf', 'docx'], key="add_file")
+add_files = st.file_uploader("Upload Additional Document(s) (Supporting - Optional)", type=['txt', 'pdf', 'docx'], key="add_file", accept_multiple_files=True)
 st.markdown("<br>", unsafe_allow_html=True)
 
 # Logic Switch: Are we generating initially, or finalizing after gathering missing info?
@@ -270,9 +280,9 @@ if not st.session_state.awaiting_missing_info:
     generate_btn = st.button("🚀 Analyze Documents & Generate SD", type="primary", use_container_width=True)
 
     if generate_btn:
-        reg_content = extract_text_from_file(reg_file)
-        brd_content = extract_text_from_file(brd_file)
-        additional_final_content = extract_text_from_file(add_file)
+        reg_content = extract_text_from_files(reg_files)
+        brd_content = extract_text_from_files(brd_files)
+        additional_final_content = extract_text_from_files(add_files)
         template_content = load_template_xml()
 
         if not template_content:
