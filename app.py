@@ -327,7 +327,7 @@ st.subheader("Architecture-Driven Document Pipeline")
 st.divider()
 
 # --- 1. Input Section (Always Visible) ---
-st.header("1. Input Section") 
+st.header("Input Section") 
 st.info("ℹ️ SD Template structure is automatically loaded from `template.xml`.")
 
 col_cr1, col_cr2 = st.columns(2)
@@ -446,7 +446,7 @@ if st.session_state.awaiting_missing_info and not st.session_state.generated_sd:
 # --- 2. Post-Processing View (Output Section) ---
 if st.session_state.generated_sd:
     st.divider()
-    st.header("2. Output Section") 
+    st.header("Output Section") 
     st.markdown("### Synthesized Solution Document (SD)") 
     
     with st.container(border=True):
@@ -534,7 +534,7 @@ if st.session_state.generated_sd:
 
 # --- 3. Knowledge Base Section ---
 st.divider()
-st.header("3. Knowledge Base")
+st.header("Knowledge Base")
 if not st.session_state.knowledge_base:
     st.info("The knowledge base is currently empty. Generated documents can be stored here for future reference.")
 else:
