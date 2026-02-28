@@ -3,6 +3,7 @@ import os
 import io
 import PyPDF2
 import docx
+import json
 import markdown
 from fpdf import FPDF
 from dotenv import load_dotenv
@@ -23,7 +24,11 @@ if "generated_sd" not in st.session_state:
     st.session_state.generated_sd = ""
 
 if "knowledge_base" not in st.session_state:
-    st.session_state.knowledge_base = [] 
+    if os.path.exists("knowledge_base.json"):
+        with open("knowledge_base.json", "r", encoding="utf-8") as f:
+            st.session_state.knowledge_base = json.load(f)
+    else:
+        st.session_state.knowledge_base = {} 
 
 # NEW: States for the Missing Information flow
 if "awaiting_missing_info" not in st.session_state:
@@ -201,6 +206,15 @@ Please synthesize them exactly according to the provided system instructions and
 """
     if additional.strip():
         synthesize_prompt += f"\n---\n**4. Additional Supporting Document Content:**\n{additional}\n"
+        
+    if parent_sd_content:
+            synthesize_prompt += f"""
+---
+**5. Parent Solution Document (Reference):**
+{parent_sd_content}
+
+*Instruction: Use this older Parent SD to pre-fill or carry over common project details, architecture patterns, and standard constraints applicable to the current CR.*
+"""
 
     with st.status("🛠️ Synthesizing Final Solution Document...", expanded=True) as status:
         st.write("Mapping Regulatory constraints to Business requirements...")
@@ -264,6 +278,20 @@ st.divider()
 # --- 1. Input Section (Always Visible) ---
 st.header("1. Input Section") 
 st.info("ℹ️ SD Template structure is automatically loaded from `template.xml`.")
+
+col_cr1, col_cr2 = st.columns(2)
+with col_cr1:
+    current_cr = st.text_input("Current CR No. (Required for saving)", key="current_cr")
+with col_cr2:
+    parent_cr = st.text_input("Parent CR No. (Optional)", key="parent_cr")
+
+parent_sd_content = ""
+if parent_cr and parent_cr in st.session_state.knowledge_base:
+    st.success(f"✅ Parent CR '{parent_cr}' found! Details will be pre-filled as a reference.")
+    parent_sd_content = st.session_state.knowledge_base[parent_cr]
+elif parent_cr:
+    st.warning(f"⚠️ Parent CR '{parent_cr}' not found in Knowledge Base.")
+
 
 colA, colB = st.columns(2)
 with colA:
@@ -375,8 +403,17 @@ if st.session_state.generated_sd:
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("✅ Insert into Knowledge Base", key="save_kb_btn", type="primary", use_container_width=True):
-            st.session_state.knowledge_base.append(st.session_state.generated_sd)
-            st.success("Document added to Knowledge Base successfully!")
+            # 1. Determine the CR key from the input field
+            cr_key = st.session_state.current_cr.strip() if st.session_state.current_cr.strip() else f"CR-UNKNOWN-{len(st.session_state.knowledge_base)+1}"
+            
+            # 2. Add to state dictionary
+            st.session_state.knowledge_base[cr_key] = st.session_state.generated_sd
+            
+            # 3. Save to local JSON file
+            with open("knowledge_base.json", "w", encoding="utf-8") as f:
+                json.dump(st.session_state.knowledge_base, f, indent=4)
+                
+            st.success(f"Document added to KB under '{cr_key}'!")
             st.session_state.generated_sd = ""
             st.rerun()
             
@@ -401,9 +438,6 @@ st.header("3. Knowledge Base")
 if not st.session_state.knowledge_base:
     st.info("The knowledge base is currently empty. Generated documents can be stored here for future reference.")
 else:
-    for i, sd_item in enumerate(reversed(st.session_state.knowledge_base), 1):
-        first_line = sd_item.strip().split('\n')[0][:70] 
-        title = first_line or "Stored Solution Document"
-        
-        with st.expander(f"🗃️ {title} (ID: {i})"):
+    for cr_key, sd_item in reversed(list(st.session_state.knowledge_base.items())):
+        with st.expander(f"🗃️ CR No: {cr_key}"):
             st.markdown(sd_item)
