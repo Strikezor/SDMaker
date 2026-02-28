@@ -1,0 +1,105 @@
+Technical Specification: Data Transformation Engine
+
+This document outlines the core functionality, operational logic, and architectural principles of the DataProcessor module. This component serves as the primary business logic layer for the system's data ingestion pipeline.
+
+1. Functional Overview
+
+The engine is designed to act as a gatekeeper and transformer for inbound telemetry data. It ensures that only well-formed data enters the system and standardizes that data for downstream analytics.
+
+Key Capabilities:
+
+Schema Validation: Verifies that inbound JSON packets contain mandatory header fields (id, timestamp, payload).
+
+Data Normalization: Converts varying input formats into a standardized internal representation.
+
+Audit Logging: Generates structured logs for every processing attempt to support observability and debugging.
+
+Transformation Logic: Applies business rules (e.g., string normalization, ID mapping) to the raw payload.
+
+2. Processing Workflow
+
+When a data packet is received, the engine follows a strict linear execution path:
+
+Ingestion: The raw dictionary/JSON object is passed to the transform_data method.
+
+Validation Step: * The engine checks for the presence of the id, timestamp, and payload keys.
+
+If any are missing, a ValueError is raised, and the process is aborted to prevent database corruption.
+
+Transformation Step:
+
+ID Mapping: Prepends a system-specific prefix (PROC-) to the original ID.
+
+Timestamping: Generates a new processed_at timestamp in ISO 8601 format to record the exact moment of system entry.
+
+Payload Sanitization: Normalizes the payload content (currently forced to uppercase for consistency in search indexing).
+
+Reporting: Returns a "Ready for Storage" object and logs the success to the standard output.
+
+3. Data Contract
+
+The component adheres to the following input/output contract:
+
+Input Schema (Required)
+
+Field
+
+Type
+
+Description
+
+id
+
+String
+
+Unique identifier from the source system.
+
+timestamp
+
+ISO8601
+
+The time the event was generated at the source.
+
+payload
+
+String
+
+The raw data message to be processed.
+
+Output Schema (Guaranteed)
+
+Field
+
+Type
+
+Description
+
+internal_id
+
+String
+
+The system-namespaced identifier.
+
+processed_at
+
+ISO8601
+
+Server-side processing time.
+
+content
+
+String
+
+Transformed and cleaned message.
+
+status
+
+String
+
+Set to READY_FOR_STORAGE upon success.
+
+4. Error Handling & Edge Cases
+
+Missing Fields: Triggers a validation error. The solution assumes a "fail-fast" approach to ensure data integrity.
+
+Malformed JSON: The system expects a Python dictionary; upstream handlers should ensure proper JSON parsing before calling this module.

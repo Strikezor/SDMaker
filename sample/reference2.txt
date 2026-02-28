@@ -1,0 +1,83 @@
+import logging
+import json
+from datetime import datetime
+from typing import Dict, Any
+
+# Configure logging to support the Audit Logging requirement
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("DataTransformationEngine")
+
+class DataProcessor:
+    """
+    Implementation of the Data Transformation Engine as specified in the 
+    Technical Specification. Acts as a gatekeeper for inbound telemetry data.
+    """
+    
+    def __init__(self, system_prefix: str = "PROC-"):
+        self.system_prefix = system_prefix
+
+    def validate_payload(self, data: Dict[str, Any]) -> bool:
+        """
+        Schema Validation: Verifies mandatory header fields.
+        Required fields: id, timestamp, payload.
+        """
+        required_fields = ["id", "timestamp", "payload"]
+        return all(field in data for field in required_fields)
+
+    def transform_data(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Performs the linear execution path for data transformation:
+        Ingestion -> Validation -> Transformation -> Reporting.
+        """
+        # 1. Ingestion & 2. Validation Step
+        if not self.validate_payload(raw_data):
+            logger.error(f"Validation failed for inbound packet: {raw_data}")
+            # Error Handling: Fail-fast approach to ensure data integrity
+            raise ValueError("Data payload missing required fields: id, timestamp, and payload.")
+
+        try:
+            # 3. Transformation Step
+            
+            # ID Mapping: Prepends system-specific prefix
+            internal_id = f"{self.system_prefix}{raw_data['id']}"
+            
+            # Timestamping: Standardize server-side processing time in ISO 8601
+            processed_at = datetime.utcnow().isoformat() + "Z"
+            
+            # Payload Sanitization: Force uppercase for consistency
+            content = str(raw_data['payload']).upper()
+
+            # 4. Reporting: Create the standardized internal representation
+            processed_item = {
+                "internal_id": internal_id,
+                "processed_at": processed_at,
+                "content": content,
+                "status": "READY_FOR_STORAGE"
+            }
+
+            logger.info(f"Successfully processed item: {internal_id}")
+            return processed_item
+
+        except Exception as e:
+            logger.error(f"Unexpected error during transformation: {str(e)}")
+            raise
+
+if __name__ == "__main__":
+    # Sample execution to demonstrate the Data Contract
+    engine = DataProcessor()
+    
+    sample_input = {
+        "id": "A123",
+        "timestamp": "2023-10-27T10:00:00Z",
+        "payload": "sensor_reading_active"
+    }
+    
+    try:
+        result = engine.transform_data(sample_input)
+        print("\n--- Output Schema (Guaranteed) ---")
+        print(json.dumps(result, indent=2))
+    except ValueError as ve:
+        print(f"Caught expected validation error: {ve}")
