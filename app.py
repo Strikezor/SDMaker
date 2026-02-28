@@ -194,6 +194,36 @@ def load_template_xml(filepath="template.xml"):
         st.error(f"❌ Error reading template file: {e}")
         return None
 
+def refine_solution_document(current_sd, edit_instruction, api_key):
+    """Revises the existing SD based on user prompt instructions."""
+    if not api_key:
+        st.error("Please set your Groq API Key.")
+        return None
+        
+    client = Groq(api_key=api_key)
+    
+    system_prompt = """You are an expert AI Solution Document Architect. 
+    Your task is to revise the provided Solution Document based strictly on the user's instructions. 
+    Maintain the professional tone, Markdown formatting, and overall structure unless instructed otherwise. 
+    Return ONLY the revised document text. Do not include introductory or concluding remarks."""
+    
+    user_prompt = f"### CURRENT DOCUMENT:\n{current_sd}\n\n### REVISION INSTRUCTIONS:\n{edit_instruction}"
+    
+    try:
+        response = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt} 
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.3, # Low temperature for precise editing
+            max_tokens=4096,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"API Error during revision: {str(e)}")
+        return None
+
 def generate_pdf(md_text):
     html_text = markdown.markdown(md_text, extensions=['tables'])
     pdf = FPDF()
@@ -421,6 +451,29 @@ if st.session_state.generated_sd:
     
     with st.container(border=True):
         st.markdown(st.session_state.generated_sd)
+        
+    st.markdown("### ✍️ Refine Generated Document")
+    with st.form("edit_sd_form"):
+        col_edit1, col_edit2 = st.columns([4, 1])
+        with col_edit1:
+            edit_instruction = st.text_input(
+                "Ask the AI to change something", 
+                placeholder="e.g., 'Expand the Assumptions section', 'Make the tone more formal'",
+                label_visibility="collapsed"
+            )
+        with col_edit2:
+            submit_edit = st.form_submit_button("✨ Apply Revision", use_container_width=True)
+            
+        if submit_edit and edit_instruction.strip():
+            with st.status("🔄 Refining document...", expanded=True) as edit_status:
+                st.write(f"Applying instruction: '{edit_instruction}'...")
+                revised_sd = refine_solution_document(st.session_state.generated_sd, edit_instruction, api_key)
+                edit_status.update(label="Revision Complete!", state="complete", expanded=False)
+                
+                if revised_sd:
+                    # Update the state with the newly edited document
+                    st.session_state.generated_sd = revised_sd
+                    st.rerun()
         
     st.markdown("### Post-Synthesis Pipeline")
     
