@@ -40,10 +40,14 @@ if "missing_info_report" not in st.session_state:
 if "cached_docs" not in st.session_state:
     st.session_state.cached_docs = {}
 
+if "cr_conflict" not in st.session_state:
+    st.session_state.cr_conflict = None
+
 # --- State Management Helpers ---
 def clear_inputs():
-    """Clears uploaded files and resets generation state."""
-    keys_to_clear = ['reg_file', 'brd_file', 'add_file']
+    """Clears uploaded files, text inputs, and resets generation state."""
+    # Added 'current_cr' to clear the text input state so the auto-increment fires on rerun
+    keys_to_clear = ['reg_file', 'brd_file', 'add_file', 'current_cr', 'parent_cr']
     for key in keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
@@ -52,6 +56,7 @@ def clear_inputs():
     st.session_state.awaiting_missing_info = False
     st.session_state.missing_info_report = ""
     st.session_state.cached_docs = {}
+    st.session_state.cr_conflict = None
 
 # --- Groq & LLM Helper Functions ---
 def check_document_relevance(content, doc_type, api_key):
@@ -76,6 +81,22 @@ def check_document_relevance(content, doc_type, api_key):
         return response.choices[0].message.content.strip()
     except Exception as e:
         return f"INVALID: API Error during validation - {str(e)}"
+
+def get_next_cr_number(kb):
+    """Generates the next CR number (e.g., CR000001) based on existing KB entries."""
+    if not kb:
+        return "CR000001"
+    
+    max_num = 0
+    for key in kb.keys():
+        # Check if the key matches the "CR" + digits format
+        if key.startswith("CR") and key[2:].isdigit():
+            num = int(key[2:])
+            if num > max_num:
+                max_num = num
+                
+    next_num = max_num + 1
+    return f"CR{next_num:06d}"
 
 def check_missing_information(template_xml, reg_text, brd_text, api_key):
     """Checks if the inputs are missing mandatory sections required by the XML template."""
@@ -281,7 +302,10 @@ st.info("ℹ️ SD Template structure is automatically loaded from `template.xml
 
 col_cr1, col_cr2 = st.columns(2)
 with col_cr1:
-    current_cr = st.text_input("Current CR No. (Required for saving)", key="current_cr")
+    # Auto-calculate the next CR number
+    auto_cr = get_next_cr_number(st.session_state.knowledge_base)
+    # Set it as the default value
+    current_cr = st.text_input("Current CR No. (Auto-generated)", value=auto_cr, key="current_cr")
 with col_cr2:
     parent_cr = st.text_input("Parent CR No. (Optional)", key="parent_cr")
 
@@ -402,20 +426,43 @@ if st.session_state.generated_sd:
     
     col1, col2, col3 = st.columns(3)
     with col1:
+        # Standard Save Attempt
         if st.button("✅ Insert into Knowledge Base", key="save_kb_btn", type="primary", use_container_width=True):
-            # 1. Determine the CR key from the input field
-            cr_key = st.session_state.current_cr.strip() if st.session_state.current_cr.strip() else f"CR-UNKNOWN-{len(st.session_state.knowledge_base)+1}"
+            cr_key = st.session_state.current_cr.strip() if st.session_state.current_cr.strip() else get_next_cr_number(st.session_state.knowledge_base)
             
-            # 2. Add to state dictionary
-            st.session_state.knowledge_base[cr_key] = st.session_state.generated_sd
-            
-            # 3. Save to local JSON file
-            with open("knowledge_base.json", "w", encoding="utf-8") as f:
-                json.dump(st.session_state.knowledge_base, f, indent=4)
+            # Uniqueness Check
+            if cr_key in st.session_state.knowledge_base:
+                st.session_state.cr_conflict = cr_key
+            else:
+                # Save normally if unique
+                st.session_state.knowledge_base[cr_key] = st.session_state.generated_sd
+                with open("knowledge_base.json", "w", encoding="utf-8") as f:
+                    json.dump(st.session_state.knowledge_base, f, indent=4)
+                    
+                st.success(f"Document added to KB under '{cr_key}'!")
+                clear_inputs() # Resets all file inputs and allows auto-increment on rerun
+                st.rerun()
                 
-            st.success(f"Document added to KB under '{cr_key}'!")
-            st.session_state.generated_sd = ""
-            st.rerun()
+        # Conflict Resolution UI (Appears only if a duplicate is detected)
+        if st.session_state.cr_conflict:
+            st.warning(f"⚠️ The CR No. '{st.session_state.cr_conflict}' already exists!")
+            st.markdown("Would you like to auto-generate a new one or type a different one above?")
+            
+            res_col1, res_col2 = st.columns(2)
+            with res_col1:
+                if st.button("Auto-Assign & Save", use_container_width=True):
+                    new_cr = get_next_cr_number(st.session_state.knowledge_base)
+                    st.session_state.knowledge_base[new_cr] = st.session_state.generated_sd
+                    with open("knowledge_base.json", "w", encoding="utf-8") as f:
+                        json.dump(st.session_state.knowledge_base, f, indent=4)
+                    
+                    st.success(f"Saved successfully as '{new_cr}'!")
+                    clear_inputs()
+                    st.rerun()
+            with res_col2:
+                if st.button("I'll type a new one", use_container_width=True):
+                    st.session_state.cr_conflict = None
+                    st.rerun()
             
     with col2:
         pdf_bytes = generate_pdf(st.session_state.generated_sd)
