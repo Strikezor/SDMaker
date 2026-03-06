@@ -53,21 +53,6 @@
         </DataMigrationApplicability>
     </SolutionDetails>
 
-    <SystemSetup>
-        <ParameterTable>
-            [Insert parameter requirements like ED1B, ED2P, ED3P, Error Messages, DB changes, etc.]
-        </ParameterTable>
-        <ED1_ED2_ParameterSnapshot>
-            [Insert parameter snapshot details if applicable]
-        </ED1_ED2_ParameterSnapshot>
-        <GSTTXNCard>
-            [Insert GSTTXN card details if applicable]
-        </GSTTXNCard>
-        <FeeSetup>
-            [Insert Fee setup parameters if applicable]
-        </FeeSetup>
-    </SystemSetup>
-
     <References>
         [Insert References, Emails, or supporting document links]
     </References>
