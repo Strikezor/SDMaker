@@ -1,0 +1,212 @@
+   	
+
+
+
+
+
+Solution Document
+CR No. 
+Feb , Version 1.0
+Project
+
+Change Description
+
+Change Scope
+
+ST Baseline Date
+
+
+
+
+
+
+
+Notice
+This is a controlled document. Unauthorised access, copying, replication or usage for a purpose other than for which it is intended, are prohibited.
+All trademarks that appear in the document have been used for identification purposes only and belong to their respective companies.
+
+
+SBI NBC Development
+Belapur, Mumbai
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Document Revision or Change Control
+
+Customer: State Bank of India
+Project: SBI NBC Development	
+Document Name: Solution Document
+Release Notice Reference (for release)
+Date
+Version Number
+TCS Associate Name
+Reason for Change
+
+
+
+
+
+
+
+
+
+
+Sign-off (If the IT is internal, customer’s sign-off may not be required)   
+
+Sign-off Stage
+Sign-off Person
+Name
+Due Date
+
+
+
+
+
+
+
+
+About this Document
+Purpose
+The document gives a brief description of the functional specifications and assumptions as per the specific requirement raised by the bank under this Change Request.
+
+
+Intended Audience
+SBI Development Team
+SBI UAT Team
+SBI – Business Unit
+
+
+How to Use this Document
+This document specifies the existing implementation of the functionality in BaNCS Link (wherever available) and the proposed implementation of same in NBC.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Contents
+	Contents	4
+1.	CR Details.	7
+1.1	 Scope of change	7
+	2. Solution Details	8
+	2.1 Existing Functionality	8
+2.2	 Solution Details	9
+2.3	Parameter Changes	11
+2.4	Assumptions	11
+2.5	Limitations	11
+2.6	User Type or Capability Specifications	11
+2.7	Maker Checker Specifications	11
+2.8	Interface/Integration Dependencies	11
+2.9	Data Migration Applicability	11
+2.10	Archival policy for new tables	12
+2.11	Business acceptance scenario	12
+2.12	References	12
+
+
+
+
+
+
+
+List of Abbreviations
+Abbreviation
+Expanded Form
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	
+
+
+
+
+
+Functional Specifications
+    1. CR Details.
+
+
+        1.1 Scope of change
+
+
+
+
+
+2. Solution Details
+2.1 Existing Functionality 
+
+
+
+
+        2.2  Solution Details
+
+
+
+        2.3 Parameter Changes
+        2.4 Assumptions
+        2.5 Limitations
+
+        2.6 User Type or Capability Specifications
+
+        2.7 Maker Checker Specifications
+
+
+
+
+        2.8 Interface/Integration Dependencies
+
+
+
+
+        2.9 Data Migration Applicability
+
+
+        2.10 Archival policy for new tables
+
+        2.11 Business acceptance scenario
+
+
+        1.12 References
+
+
+--- End of the Document ---
