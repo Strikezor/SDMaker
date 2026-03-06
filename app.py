@@ -43,6 +43,9 @@ if "cached_docs" not in st.session_state:
 if "cr_conflict" not in st.session_state:
     st.session_state.cr_conflict = None
 
+if "kb_edit_mode" not in st.session_state:
+    st.session_state.kb_edit_mode = {}
+
 # --- State Management Helpers ---
 def clear_inputs():
     """Clears uploaded files, text inputs, and resets generation state."""
@@ -247,7 +250,7 @@ Please synthesize them exactly according to the provided system instructions and
 ---
 ### INPUT DOCUMENTS:
 **1. Regulatory Document Content:**
-{reg}
+{reg if reg.strip() else "None provided. Proceed with synthesis without mapping regulatory constraints."}
 
 **2. Business Requirement Document (BRD/URF) Content:**
 {brd}
@@ -283,15 +286,18 @@ Please synthesize them exactly according to the provided system instructions and
 
 # --- Constants & System Prompt ---
 SYSTEM_PROMPT = """
-You are an expert AI Solution Document Architect.
+You are an expert AI Solution Document Architect specializing STRICTLY in Core Banking Systems (CBS).
 
-YOUR MANDATE:
-1.  **Solution Synthesis:** You will be provided with various inputs: a Regulatory Document, a Business Requirements Document (BRD/URF), and a Solution Document (SD) Template structure provided in XML format. Your core task is to synthesize these inputs into a final Solution Document.
-2.  **Strict Adherence to Template:** The output **must** follow the exact format, structure, and hierarchy defined in the provided XML SD Template. Do not deviate from the structure of the template. Extract the section headers from the XML tags.
-3.  **Synthesis Logic:** You must map the business requirements from the BRD/URF to the regulatory constraints in the Regulatory Document.
-4.  **STRICT GROUNDING (NO HALLUCINATION):** You must ONLY use the information explicitly provided in the uploaded documents. Do not invent, assume, or hallucinate. 
-5.  **Handling Missing Info:** If the XML template asks for a specific detail that is NOT present in any of the uploaded source documents, you must explicitly state: *"Information not provided in source documents."*
-6.  **Formatting:** Professional, technical tone. Use Markdown (bolding, lists, headings).
+YOUR MANDATE AND STRICT RULES:
+1.  **ABSOLUTE SCOPE RESTRICTION (CBS ONLY - CRITICAL):** You are a CBS-exclusive architect. When analyzing the BRD/URF, you must act as a strict filter. You must ONLY extract, synthesize, and include development requirements, process flows, or changes that occur explicitly WITHIN the CBS. 
+    * **EXCLUSION DIRECTIVE:** You MUST entirely ignore, omit, and exclude any requirements, UI/UX designs, front-end portals, or developments intended for other systems outside the CBS perimeter. If a section in the source document is not about the CBS, treat it as if it does not exist.
+2.  **Solution Synthesis:** You will be provided with various inputs: a Regulatory Document, a Business Requirements Document (BRD/URF), and a Solution Document (SD) Template (XML). Synthesize these inputs into a final Solution Document, applying the CBS-only filter at all times.
+3.  **Strict Adherence to Template:** The output **must** follow the exact format, structure, and hierarchy defined in the provided XML SD Template. Extract the section headers from the XML tags.
+4.  **Synthesis Logic:** Map the CBS-specific business requirements from the BRD/URF to the regulatory constraints in the Regulatory Document.
+5.  **Depth and Comprehensiveness (FOR CBS ONLY):** Within the strict boundaries of CBS requirements, do not generate brief summaries. Elaborate extensively on the CBS solution details. Provide highly detailed explanations of the CBS business logic, technical implementations, and architectural changes to make the CBS sections exhaustive.
+6.  **STRICT GROUNDING (NO HALLUCINATION):** ONLY use the information explicitly provided in the uploaded documents. Expand deeply on CBS aspects, but do not invent outside the provided context.
+7.  **Handling Missing Info:** If the XML template asks for a specific detail that is NOT present in any of the uploaded source documents (or was filtered out because it wasn't CBS-related), you must explicitly state: *"Information not provided in source documents."*
+8.  **Formatting:** Professional, technical tone. Use Markdown extensively (bolding, bullet points, numbered lists, and sub-headings) to structure the text for readability.
 """
 
 # --- Sidebar: Configuration ---
@@ -349,7 +355,7 @@ elif parent_cr:
 
 colA, colB = st.columns(2)
 with colA:
-    reg_files = st.file_uploader("Upload Regulatory Document(s)", type=['txt', 'pdf', 'docx'], key="reg_file", accept_multiple_files=True)
+    reg_files = st.file_uploader("Upload Regulatory Document(s) (Optional)", type=['txt', 'pdf', 'docx'], key="reg_file", accept_multiple_files=True)
 with colB:
     brd_files = st.file_uploader("Upload BRD / URF Document(s)", type=['txt', 'pdf', 'docx'], key="brd_file", accept_multiple_files=True)
 
@@ -369,19 +375,22 @@ if not st.session_state.awaiting_missing_info:
 
         if not template_content:
             st.warning("Cannot proceed without `template.xml`.")
-        elif not reg_content.strip() or not brd_content.strip():
-            st.warning("Please upload both Regulatory and BRD/URF input documents.")
+        elif not brd_content.strip():
+            st.warning("Please upload BRD/URF input documents.")
         elif not api_key:
             st.warning("GROQ_API_KEY is not configured in your .env file.")
         else:
             # 1. Validation Step
             with st.status("🔍 Analyzing input documents...", expanded=True) as val_status:
-                st.write("Validating Regulatory Document relevance...")
-                reg_validation = check_document_relevance(reg_content, "Regulatory or Compliance", api_key)
-                if reg_validation.startswith("INVALID"):
-                    val_status.update(label="Validation Failed", state="error", expanded=True)
-                    st.error(f"**Regulatory Document Error:** {reg_validation.replace('INVALID:', '').strip()}")
-                    st.stop()
+                if reg_content.strip():
+                    st.write("Validating Regulatory Document relevance...")
+                    reg_validation = check_document_relevance(reg_content, "Regulatory or Compliance", api_key)
+                    if reg_validation.startswith("INVALID"):
+                        val_status.update(label="Validation Failed", state="error", expanded=True)
+                        st.error(f"**Regulatory Document Error:** {reg_validation.replace('INVALID:', '').strip()}")
+                        st.stop()
+                else:
+                    st.write("No Regulatory Document provided. Skipping regulatory validation...")
                 
                 st.write("Validating BRD / URF Document relevance...")
                 brd_validation = check_document_relevance(brd_content, "Business Requirement or Use Case", api_key)
@@ -538,6 +547,60 @@ st.header("Knowledge Base")
 if not st.session_state.knowledge_base:
     st.info("The knowledge base is currently empty. Generated documents can be stored here for future reference.")
 else:
+    # Convert to list to avoid runtime errors if dictionary changes size during iteration
     for cr_key, sd_item in reversed(list(st.session_state.knowledge_base.items())):
         with st.expander(f"🗃️ CR No: {cr_key}"):
-            st.markdown(sd_item)
+            
+            # Action Buttons Row
+            col1, col2, col3, col4 = st.columns([2, 2, 2, 4])
+            
+            with col1:
+                # PDF Export
+                pdf_bytes = generate_pdf(sd_item)
+                st.download_button(
+                    label="📥 PDF",
+                    data=pdf_bytes,
+                    file_name=f"{cr_key}_Solution_Document.pdf",
+                    mime="application/pdf",
+                    key=f"dl_kb_{cr_key}",
+                    use_container_width=True
+                )
+            
+            with col2:
+                # Toggle Edit Mode
+                is_editing = st.session_state.kb_edit_mode.get(cr_key, False)
+                if st.button("✏️ Edit" if not is_editing else "❌ Cancel", key=f"edit_toggle_{cr_key}", use_container_width=True):
+                    st.session_state.kb_edit_mode[cr_key] = not is_editing
+                    st.rerun()
+            
+            with col3:
+                # Delete Document
+                if st.button("🗑️ Delete", key=f"del_{cr_key}", type="primary", use_container_width=True):
+                    # Remove from session state and save to JSON
+                    del st.session_state.knowledge_base[cr_key]
+                    with open("knowledge_base.json", "w", encoding="utf-8") as f:
+                        json.dump(st.session_state.knowledge_base, f, indent=4)
+                    
+                    # Clean up edit mode state if it exists
+                    if cr_key in st.session_state.kb_edit_mode:
+                        del st.session_state.kb_edit_mode[cr_key]
+                        
+                    st.rerun()
+
+            st.markdown("---")
+            
+            # Display or Edit View
+            if st.session_state.kb_edit_mode.get(cr_key, False):
+                # Edit Mode View
+                new_sd_content = st.text_area("Edit Document Markdown:", value=sd_item, height=400, key=f"text_area_{cr_key}")
+                
+                if st.button("💾 Save Changes", key=f"save_edit_{cr_key}", type="primary"):
+                    st.session_state.knowledge_base[cr_key] = new_sd_content
+                    with open("knowledge_base.json", "w", encoding="utf-8") as f:
+                        json.dump(st.session_state.knowledge_base, f, indent=4)
+                    st.session_state.kb_edit_mode[cr_key] = False
+                    st.success("Changes saved!")
+                    st.rerun()
+            else:
+                # Standard Markdown View
+                st.markdown(sd_item)
