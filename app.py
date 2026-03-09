@@ -4,8 +4,7 @@ import io
 import PyPDF2
 import docx
 import json
-import markdown
-from fpdf import FPDF
+from docxtpl import DocxTemplate
 from dotenv import load_dotenv
 from groq import Groq
 
@@ -23,6 +22,9 @@ st.set_page_config(
 if "generated_sd" not in st.session_state:
     st.session_state.generated_sd = ""
 
+if "previous_sd" not in st.session_state: # Included the Undo state you asked for earlier!
+    st.session_state.previous_sd = None
+
 if "knowledge_base" not in st.session_state:
     if os.path.exists("knowledge_base.json"):
         with open("knowledge_base.json", "r", encoding="utf-8") as f:
@@ -30,7 +32,6 @@ if "knowledge_base" not in st.session_state:
     else:
         st.session_state.knowledge_base = {} 
 
-# NEW: States for the Missing Information flow
 if "awaiting_missing_info" not in st.session_state:
     st.session_state.awaiting_missing_info = False
 
@@ -49,13 +50,13 @@ if "kb_edit_mode" not in st.session_state:
 # --- State Management Helpers ---
 def clear_inputs():
     """Clears uploaded files, text inputs, and resets generation state."""
-    # Added 'current_cr' to clear the text input state so the auto-increment fires on rerun
     keys_to_clear = ['reg_file', 'brd_file', 'add_file', 'current_cr', 'parent_cr']
     for key in keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
             
     st.session_state.generated_sd = ""
+    st.session_state.previous_sd = None
     st.session_state.awaiting_missing_info = False
     st.session_state.missing_info_report = ""
     st.session_state.cached_docs = {}
@@ -63,14 +64,12 @@ def clear_inputs():
 
 # --- Groq & LLM Helper Functions ---
 def check_document_relevance(content, doc_type, api_key):
-    """Uses a smaller, faster model to validate if the document matches the expected type."""
     client = Groq(api_key=api_key)
     validation_prompt = f"""You are an expert document classifier. 
     Task: Determine if the provided text is a relevant '{doc_type}' document.
     - If it is relevant or contains elements of a {doc_type}, respond EXACTLY with the word: VALID
     - If it is completely irrelevant (e.g., a recipe, random code, a personal letter, unrelated topic), respond with: INVALID: [Brief 1-sentence reason]
     """
-    
     try:
         response = client.chat.completions.create(
             messages=[
@@ -85,57 +84,73 @@ def check_document_relevance(content, doc_type, api_key):
     except Exception as e:
         return f"INVALID: API Error during validation - {str(e)}"
 
+def fill_word_template(json_data_string, template_path="template.docx"):
+    try:
+        clean_json_string = json_data_string.strip()
+        if clean_json_string.startswith("```json"):
+            clean_json_string = clean_json_string[7:]
+        elif clean_json_string.startswith("```"):
+            clean_json_string = clean_json_string[3:]
+            
+        if clean_json_string.endswith("```"):
+            clean_json_string = clean_json_string[:-3]
+            
+        context = json.loads(clean_json_string.strip(), strict = False)
+        doc = DocxTemplate(template_path)
+        doc.render(context)
+        
+        file_stream = io.BytesIO()
+        doc.save(file_stream)
+        file_stream.seek(0)
+        return file_stream.getvalue()
+        
+    except json.JSONDecodeError as e:
+        st.error(f"Error: The AI did not return valid JSON. Details: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Error generating Word document: {e}")
+        return None
+
 def get_next_cr_number(kb):
-    """Generates the next CR number (e.g., CR000001) based on existing KB entries."""
     if not kb:
         return "CR000001"
-    
     max_num = 0
     for key in kb.keys():
-        # Check if the key matches the "CR" + digits format
         if key.startswith("CR") and key[2:].isdigit():
             num = int(key[2:])
             if num > max_num:
                 max_num = num
-                
     next_num = max_num + 1
     return f"CR{next_num:06d}"
 
-def check_missing_information(template_xml, reg_text, brd_text, api_key):
-    """Checks if the inputs are missing mandatory sections required by the XML template."""
+def check_missing_information(reg_text, brd_text, api_key):
     client = Groq(api_key=api_key)
     prompt = f"""You are a precise business analyst.
-    Task: Review the SD Template (XML) against the provided input documents.
-    Identify if any specific sections required by the XML template are completely missing from the inputs.
+    Task: Review the input documents and identify if any core architectural details are completely missing.
+    Check for: Business Logic, Process Flows, Technical/System Impacts, User Roles, and Data Migration.
     
-    - If ALL necessary information to fill the template is present, respond EXACTLY with the word: NONE
-    - If information is missing, provide a concise bulleted list of the missing details. Do not generate the SD.
-    
-    Template XML:
-    {template_xml}
+    - If sufficient information is present to build a Solution Document, respond EXACTLY with the word: NONE
+    - If critical information is missing, provide a concise bulleted list of the missing details.
     
     Input Documents:
     [Regulatory]: {reg_text[:3000]}
     [BRD/URF]: {brd_text[:3000]}
     """
-    
     try:
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.1-8b-instant", # Fast model for quick comparison
+            model="llama-3.1-8b-instant",
             temperature=0.1,
             max_tokens=300,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        return "NONE" # Fail open: if error occurs, bypass the missing info check
+        return "NONE" 
 
 def get_groq_response(system_content, user_content, api_key):
-    """Main function to generate the heavy synthesis document."""
     if not api_key:
         st.error("Please set your Groq API Key in the .env file.")
         return None
-    
     client = Groq(api_key=api_key)
     try:
         full_history = [
@@ -153,13 +168,9 @@ def get_groq_response(system_content, user_content, api_key):
         st.error(f"API Error: {str(e)}")
         return None
 
-# --- File Processing Helpers ---
 def extract_text_from_files(uploaded_files):
-    """Extracts and concatenates text from a list of txt, pdf, or docx files."""
     if not uploaded_files:
         return ""
-    
-    # If a single file is passed by mistake, make it a list
     if not isinstance(uploaded_files, list):
         uploaded_files = [uploaded_files]
         
@@ -186,19 +197,7 @@ def extract_text_from_files(uploaded_files):
             
     return combined_text.strip()
 
-def load_template_xml(filepath="template.xml"):
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        st.error(f"❌ Template file '{filepath}' not found.")
-        return None
-    except Exception as e:
-        st.error(f"❌ Error reading template file: {e}")
-        return None
-
 def refine_solution_document(current_sd, edit_instruction, api_key):
-    """Revises the existing SD based on user prompt instructions."""
     if not api_key:
         st.error("Please set your Groq API Key.")
         return None
@@ -206,11 +205,10 @@ def refine_solution_document(current_sd, edit_instruction, api_key):
     client = Groq(api_key=api_key)
     
     system_prompt = """You are an expert AI Solution Document Architect. 
-    Your task is to revise the provided Solution Document based strictly on the user's instructions. 
-    Maintain the professional tone, Markdown formatting, and overall structure unless instructed otherwise. 
-    Return ONLY the revised document text. Do not include introductory or concluding remarks."""
+    Your task is to revise the provided JSON Solution Document based strictly on the user's instructions. 
+    CRITICAL: You MUST return the output as a valid, raw JSON object exactly matching the keys of the original document. Do not wrap it in markdown. Do not include introductory text."""
     
-    user_prompt = f"### CURRENT DOCUMENT:\n{current_sd}\n\n### REVISION INSTRUCTIONS:\n{edit_instruction}"
+    user_prompt = f"### CURRENT JSON DOCUMENT:\n{current_sd}\n\n### REVISION INSTRUCTIONS:\n{edit_instruction}"
     
     try:
         response = client.chat.completions.create(
@@ -219,7 +217,7 @@ def refine_solution_document(current_sd, edit_instruction, api_key):
                 {"role": "user", "content": user_prompt} 
             ],
             model="llama-3.3-70b-versatile",
-            temperature=0.3, # Low temperature for precise editing
+            temperature=0.3,
             max_tokens=4096,
         )
         return response.choices[0].message.content
@@ -227,25 +225,11 @@ def refine_solution_document(current_sd, edit_instruction, api_key):
         st.error(f"API Error during revision: {str(e)}")
         return None
 
-def generate_pdf(md_text):
-    html_text = markdown.markdown(md_text, extensions=['tables'])
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("helvetica", size=11)
-    try:
-        pdf.write_html(html_text)
-    except Exception as e:
-        pdf.set_font("helvetica", size=11)
-        pdf.multi_cell(0, 5, text=md_text)
-    return bytes(pdf.output())
-
-# --- Core Synthesis Logic Execution ---
-def execute_synthesis_pipeline(reg, brd, additional, template, api_key):
-    """Executes the final prompt and updates the UI state."""
+def execute_synthesis_pipeline(reg, brd, additional, api_key):
     synthesize_prompt = f"""
-I am providing several key documents below to be synthesized into a single Solution Document (SD).
+I am providing several key documents below to be synthesized into a single Solution Document (SD) JSON object.
 
-Please synthesize them exactly according to the provided system instructions and strictly follow the layout defined in the XML SD Template provided below.
+Please synthesize them exactly according to the provided system instructions.
 
 ---
 ### INPUT DOCUMENTS:
@@ -254,29 +238,25 @@ Please synthesize them exactly according to the provided system instructions and
 
 **2. Business Requirement Document (BRD/URF) Content:**
 {brd}
-
-**3. Solution Document (SD) Template Structure (MANDATORY OUTPUT FORMAT - XML):**
-{template}
 """
     if additional.strip():
-        synthesize_prompt += f"\n---\n**4. Additional Supporting Document Content:**\n{additional}\n"
+        synthesize_prompt += f"\n---\n**3. Additional Supporting Document Content:**\n{additional}\n"
         
     if parent_sd_content:
             synthesize_prompt += f"""
 ---
-**5. Parent Solution Document (Reference):**
+**4. Parent Solution Document (Reference):**
 {parent_sd_content}
-
-*Instruction: Use this older Parent SD to pre-fill or carry over common project details, architecture patterns, and standard constraints applicable to the current CR.*
+*Instruction: Use this older Parent SD to pre-fill or carry over common project details.*
 """
 
     with st.status("🛠️ Synthesizing Final Solution Document...", expanded=True) as status:
         st.write("Mapping Regulatory constraints to Business requirements...")
-        st.write("Formatting response using provided SD Template structure...")
+        st.write("Extracting JSON properties...")
         
         response = get_groq_response(SYSTEM_PROMPT, synthesize_prompt, api_key)
         
-        st.write("Finalizing synthesized document...")
+        st.write("Finalizing synthesized JSON...")
         status.update(label="Synthesis Complete!", state="complete", expanded=False)
         
         if response:
@@ -289,17 +269,36 @@ SYSTEM_PROMPT = """
 You are an expert AI Solution Document Architect specializing STRICTLY in Core Banking Systems (CBS).
 
 YOUR MANDATE AND STRICT RULES:
-1.  **ABSOLUTE SCOPE RESTRICTION (CBS ONLY - CRITICAL):** You are a CBS-exclusive architect. When analyzing the BRD/URF, you must act as a strict filter. You must ONLY extract, synthesize, and include development requirements, process flows, or changes that occur explicitly WITHIN the CBS. 
-    * **EXCLUSION DIRECTIVE:** You MUST entirely ignore, omit, and exclude any requirements, UI/UX designs, front-end portals, or developments intended for other systems outside the CBS perimeter. If a section in the source document is not about the CBS, treat it as if it does not exist.
-2.  **Solution Synthesis:** You will be provided with various inputs: a Regulatory Document, a Business Requirements Document (BRD/URF), and a Solution Document (SD) Template (XML). Synthesize these inputs into a final Solution Document, applying the CBS-only filter at all times.
-3.  **Strict Adherence to Template:** The output **must** follow the exact format, structure, and hierarchy defined in the provided XML SD Template. Extract the section headers from the XML tags.
-4.  **Synthesis Logic:** Map the CBS-specific business requirements from the BRD/URF to the regulatory constraints in the Regulatory Document.
-5.  **Depth and Comprehensiveness (FOR CBS ONLY):** Within the strict boundaries of CBS requirements, do not generate brief summaries. Elaborate extensively on the CBS solution details. Provide highly detailed explanations of the CBS business logic, technical implementations, and architectural changes to make the CBS sections exhaustive.
-6.  **STRICT GROUNDING (NO HALLUCINATION):** ONLY use the information explicitly provided in the uploaded documents. Expand deeply on CBS aspects, but do not invent outside the provided context.
-7.  **Handling Missing Info:** If the XML template asks for a specific detail that is NOT present in any of the uploaded source documents (or was filtered out because it wasn't CBS-related), you must explicitly state: *"Information not provided in source documents."*
-8.  **Formatting:** Professional, technical tone. Use Markdown extensively (bolding, bullet points, numbered lists, and sub-headings) to structure the text for readability.
+1.  **ABSOLUTE SCOPE RESTRICTION (CBS ONLY - CRITICAL):** You must ONLY extract, synthesize, and include development requirements, process flows, or changes that occur explicitly WITHIN the CBS. Ignore all external portals, UI/UX, or non-CBS systems.
+2.  **STRICT JSON OUTPUT REQUIRED:** You MUST output your response as a valid, raw JSON object. DO NOT wrap the JSON in markdown formatting. DO NOT include introductory text. MUST strictly escape all inner quotes (\\") and avoid literal unescaped line breaks inside strings.
+3.  **JSON SCHEMA (MANDATORY KEYS):** Your JSON keys must exactly match the list below. Do not add or remove any keys. If information is missing for a key, output "Information not provided in source documents."
+    {
+        "cr_number": "Extract from input or leave blank for auto-generation",
+        "month_year": "Current month and year",
+        "module_name": "Name of the relevant CBS module",
+        "functionality_name": "Name of the specific functionality being changed",
+        "brief_description": "A 1-2 sentence high-level summary",
+        "cr_details": "Detailed overview of the Change Request",
+        "scope_of_change": "In-depth explanation of the scope of CBS changes",
+        "executive_summary": "Comprehensive executive summary mapping business needs to CBS constraints",
+        "existing_functionality": "Detailed explanation of the current process flow",
+        "technical_feasibility": "Analysis of technical feasibility",
+        "proposed_solution_details": "Deep, exhaustive explanation of the CBS solution, business logic, and architectural changes.",
+        "assumptions": "List of assumptions",
+        "limitations": "List of technical or business limitations",
+        "user_type_specifications": "Required user types and capabilities",
+        "maker_checker_specifications": "Maker and Checker rules",
+        "data_migration": "Data migration applicability and details",
+        "implementation_plan": "Step-by-step implementation plan",
+        "archival_policy": "Archival policy and performance testing requirements",
+        "business_acceptance_scenario": "Business acceptance and UAT scenarios",
+        "references": "Any references or 'None provided'"
+    }
+4.  **Depth and Comprehensiveness (FOR CBS ONLY):** Within the JSON values, elaborate extensively. Provide highly detailed explanations of the CBS business logic and technical implementations. If you need line breaks inside your text, you MUST use the literal escaped string "\\n" (backslash n). Do not use actual unescaped line breaks or carriage returns.
+5.  **STRICT GROUNDING:** ONLY use the information explicitly provided in the uploaded documents. Do not invent outside the context.
+6. **Detailed Solutioning:** For the "proposed_solution_details" key, provide an extremely deep and comprehensive explanation of the proposed CBS solution. Include detailed descriptions of the business logic, technical architecture, and any changes to existing processes. This section should be thorough enough to guide a development team in understanding the full scope of the solution. It should be 1000 words or more if the information is available in the source documents. If certain details are missing, clearly state that they were not provided in the source materials. The goal is to create a rich, detailed narrative that captures all aspects of the proposed solution within the CBS context.
+7. **Executive Summary Depth:** For the "executive_summary" key, provide a comprehensive summary that not only maps the business needs to CBS constraints but also highlights the key architectural decisions and their rationale. This should give executives a clear understanding of the strategic implications of the change.
 """
-
 # --- Sidebar: Configuration ---
 with st.sidebar:
     st.header("⚙️ Configuration")
@@ -312,7 +311,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("### 📝 Instructions")
-    st.markdown("1. Ensure `template.xml` is present in the app directory.")
+    st.markdown("1. Ensure `template.docx` is present in the app directory.")
     st.markdown("2. Upload all mandatory input documents below.")
     st.markdown("3. Click 'Analyze Documents'.")
     st.markdown("4. Supply missing info (if prompted) and Generate.")
@@ -334,13 +333,11 @@ st.divider()
 
 # --- 1. Input Section (Always Visible) ---
 st.header("Input Section") 
-st.info("ℹ️ SD Template structure is automatically loaded from `template.xml`.")
+st.info("ℹ️ Using dynamic JSON structure to inject into `template.docx`.")
 
 col_cr1, col_cr2 = st.columns(2)
 with col_cr1:
-    # Auto-calculate the next CR number
     auto_cr = get_next_cr_number(st.session_state.knowledge_base)
-    # Set it as the default value
     current_cr = st.text_input("Current CR No. (Auto-generated)", value=auto_cr, key="current_cr")
 with col_cr2:
     parent_cr = st.text_input("Parent CR No. (Optional)", key="parent_cr")
@@ -352,7 +349,6 @@ if parent_cr and parent_cr in st.session_state.knowledge_base:
 elif parent_cr:
     st.warning(f"⚠️ Parent CR '{parent_cr}' not found in Knowledge Base.")
 
-
 colA, colB = st.columns(2)
 with colA:
     reg_files = st.file_uploader("Upload Regulatory Document(s) (Optional)", type=['txt', 'pdf', 'docx'], key="reg_file", accept_multiple_files=True)
@@ -363,7 +359,6 @@ st.markdown("---")
 add_files = st.file_uploader("Upload Additional Document(s) (Supporting - Optional)", type=['txt', 'pdf', 'docx'], key="add_file", accept_multiple_files=True)
 st.markdown("<br>", unsafe_allow_html=True)
 
-# Logic Switch: Are we generating initially, or finalizing after gathering missing info?
 if not st.session_state.awaiting_missing_info:
     generate_btn = st.button("🚀 Analyze Documents & Generate SD", type="primary", use_container_width=True)
 
@@ -371,16 +366,12 @@ if not st.session_state.awaiting_missing_info:
         reg_content = extract_text_from_files(reg_files)
         brd_content = extract_text_from_files(brd_files)
         additional_final_content = extract_text_from_files(add_files)
-        template_content = load_template_xml()
 
-        if not template_content:
-            st.warning("Cannot proceed without `template.xml`.")
-        elif not brd_content.strip():
+        if not brd_content.strip():
             st.warning("Please upload BRD/URF input documents.")
         elif not api_key:
             st.warning("GROQ_API_KEY is not configured in your .env file.")
         else:
-            # 1. Validation Step
             with st.status("🔍 Analyzing input documents...", expanded=True) as val_status:
                 if reg_content.strip():
                     st.write("Validating Regulatory Document relevance...")
@@ -399,33 +390,82 @@ if not st.session_state.awaiting_missing_info:
                     st.error(f"**BRD/URF Document Error:** {brd_validation.replace('INVALID:', '').strip()}")
                     st.stop()
                     
-                # 2. Check for Missing Info
-                st.write("Cross-referencing inputs with XML template requirements...")
-                missing_report = check_missing_information(template_content, reg_content, brd_content, api_key)
+                st.write("Cross-referencing inputs with required details...")
+                missing_report = check_missing_information(reg_content, brd_content, api_key)
                 val_status.update(label="Analysis Complete!", state="complete", expanded=False)
 
-            # 3. Decision Fork
             if missing_report != "NONE":
-                # Pause and ask user for missing info
                 st.session_state.awaiting_missing_info = True
                 st.session_state.missing_info_report = missing_report
                 st.session_state.cached_docs = {
                     "reg": reg_content,
                     "brd": brd_content,
-                    "add": additional_final_content,
-                    "tpl": template_content
+                    "add": additional_final_content
                 }
                 st.rerun()
             else:
-                # Everything looks good, proceed directly to generation
-                execute_synthesis_pipeline(reg_content, brd_content, additional_final_content, template_content, api_key)
+                execute_synthesis_pipeline(reg_content, brd_content, additional_final_content, api_key)
+
+def display_human_readable_doc(json_data_string):
+    """Converts the JSON data into a clean, human-readable document preview."""
+    try:
+        # Clean the string
+        clean_json_string = json_data_string.strip()
+        if clean_json_string.startswith("```json"):
+            clean_json_string = clean_json_string[7:]
+        elif clean_json_string.startswith("```"):
+            clean_json_string = clean_json_string[3:]
+        if clean_json_string.endswith("```"):
+            clean_json_string = clean_json_string[:-3]
+            
+        data = json.loads(clean_json_string, strict=False)
+        
+        # Build the Header Preview
+        st.markdown(f"### 📄 CR No: {data.get('cr_number', 'N/A')} | {data.get('month_year', 'N/A')}")
+        st.markdown(f"**Module:** {data.get('module_name', 'N/A')} | **Functionality:** {data.get('functionality_name', 'N/A')}")
+        st.info(f"**Description:** {data.get('brief_description', 'N/A')}")
+        st.markdown("---")
+        
+        # Map the JSON keys to friendly section titles
+        sections = {
+            "cr_details": "1. CR Details",
+            "scope_of_change": "1.1 Scope of Change",
+            "executive_summary": "1.2 Executive Summary",
+            "existing_functionality": "2.1 Existing Functionality with Process Flow",
+            "technical_feasibility": "2.2 Technical Feasibility",
+            "proposed_solution_details": "2.3 Proposed Solution Details",
+            "assumptions": "2.4 Assumptions",
+            "limitations": "2.5 Limitations",
+            "user_type_specifications": "2.6 User Type or Capability Specifications",
+            "maker_checker_specifications": "2.7 Maker Checker Specifications",
+            "data_migration": "2.10 Data Migration Applicability",
+            "implementation_plan": "2.11 Implementation Plan",
+            "archival_policy": "2.12 Archival Policy",
+            "business_acceptance_scenario": "2.13 Business Acceptance Scenario",
+            "references": "2.14 References"
+        }
+        
+        # Loop through and print only the sections that have data
+        for key, title in sections.items():
+            content = data.get(key, "")
+            # Skip empty sections or the default "not provided" text to keep the view clean
+            if content and content != "Information not provided in source documents.":
+                st.markdown(f"#### {title}")
+                st.markdown(content)
+                
+    except Exception as e:
+        st.error("Could not generate document preview. Displaying raw data instead.")
+        st.code(json_data_string, language="json")
 
 # --- 1.5 Missing Information Prompt ---
 if st.session_state.awaiting_missing_info and not st.session_state.generated_sd:
     st.divider()
     st.warning("⚠️ Missing Information Detected in Source Documents")
-    st.markdown("We found that the following details required by your template are missing from the uploads:")
-    st.info(st.session_state.missing_info_report)
+    st.markdown("We found that the following details are missing from the uploads:")
+    
+    # NEW: Wrap the missing info in an expander so it is collapsed by default
+    with st.expander("🔍 View missing details"):
+        st.info(st.session_state.missing_info_report)
     
     user_supplemental = st.text_area(
         "📝 Provide the missing information here (or leave blank to proceed without it):", 
@@ -435,7 +475,6 @@ if st.session_state.awaiting_missing_info and not st.session_state.generated_sd:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Proceed and Generate SD", type="primary", use_container_width=True):
-            # Combine the original additional document info with the newly typed user info
             combined_additional = st.session_state.cached_docs['add']
             if user_supplemental.strip():
                 combined_additional += f"\n\n[User Provided Supplemental Information]:\n{user_supplemental}"
@@ -444,7 +483,6 @@ if st.session_state.awaiting_missing_info and not st.session_state.generated_sd:
                 st.session_state.cached_docs['reg'],
                 st.session_state.cached_docs['brd'],
                 combined_additional,
-                st.session_state.cached_docs['tpl'],
                 api_key
             )
     with col2:
@@ -456,12 +494,22 @@ if st.session_state.awaiting_missing_info and not st.session_state.generated_sd:
 if st.session_state.generated_sd:
     st.divider()
     st.header("Output Section") 
-    st.markdown("### Synthesized Solution Document (SD)") 
+    st.markdown("### Synthesized Solution Data (JSON)") 
     
     with st.container(border=True):
-        st.markdown(st.session_state.generated_sd)
+        # Call our new function to render the text like a document!
+        display_human_readable_doc(st.session_state.generated_sd)
         
     st.markdown("### ✍️ Refine Generated Document")
+    
+    # Optional Undo button
+    if st.session_state.previous_sd:
+        if st.button("↩️ Undo Last Revision"):
+            st.session_state.generated_sd = st.session_state.previous_sd
+            st.session_state.previous_sd = None 
+            st.success("Reverted to the previous version!")
+            st.rerun()
+
     with st.form("edit_sd_form"):
         col_edit1, col_edit2 = st.columns([4, 1])
         with col_edit1:
@@ -480,7 +528,7 @@ if st.session_state.generated_sd:
                 edit_status.update(label="Revision Complete!", state="complete", expanded=False)
                 
                 if revised_sd:
-                    # Update the state with the newly edited document
+                    st.session_state.previous_sd = st.session_state.generated_sd
                     st.session_state.generated_sd = revised_sd
                     st.rerun()
         
@@ -488,24 +536,20 @@ if st.session_state.generated_sd:
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        # Standard Save Attempt
         if st.button("✅ Insert into Knowledge Base", key="save_kb_btn", type="primary", use_container_width=True):
             cr_key = st.session_state.current_cr.strip() if st.session_state.current_cr.strip() else get_next_cr_number(st.session_state.knowledge_base)
             
-            # Uniqueness Check
             if cr_key in st.session_state.knowledge_base:
                 st.session_state.cr_conflict = cr_key
             else:
-                # Save normally if unique
                 st.session_state.knowledge_base[cr_key] = st.session_state.generated_sd
                 with open("knowledge_base.json", "w", encoding="utf-8") as f:
                     json.dump(st.session_state.knowledge_base, f, indent=4)
                     
                 st.success(f"Document added to KB under '{cr_key}'!")
-                clear_inputs() # Resets all file inputs and allows auto-increment on rerun
+                clear_inputs() 
                 st.rerun()
                 
-        # Conflict Resolution UI (Appears only if a duplicate is detected)
         if st.session_state.cr_conflict:
             st.warning(f"⚠️ The CR No. '{st.session_state.cr_conflict}' already exists!")
             st.markdown("Would you like to auto-generate a new one or type a different one above?")
@@ -527,14 +571,15 @@ if st.session_state.generated_sd:
                     st.rerun()
             
     with col2:
-        pdf_bytes = generate_pdf(st.session_state.generated_sd)
-        st.download_button(
-            label="📥 Download as PDF",
-            data=pdf_bytes,
-            file_name="Synthesized_Solution_Document.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
+        word_bytes = fill_word_template(st.session_state.generated_sd)
+        if word_bytes:
+            st.download_button(
+                label="📥 Download as Word Doc",
+                data=word_bytes,
+                file_name=f"{st.session_state.current_cr}_Solution_Document.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
+            )
         
     with col3:
         if st.button("❌ Discard Output & Start Over", key="discard_btn", use_container_width=True):
@@ -547,41 +592,35 @@ st.header("Knowledge Base")
 if not st.session_state.knowledge_base:
     st.info("The knowledge base is currently empty. Generated documents can be stored here for future reference.")
 else:
-    # Convert to list to avoid runtime errors if dictionary changes size during iteration
     for cr_key, sd_item in reversed(list(st.session_state.knowledge_base.items())):
         with st.expander(f"🗃️ CR No: {cr_key}"):
             
-            # Action Buttons Row
             col1, col2, col3, col4 = st.columns([2, 2, 2, 4])
             
             with col1:
-                # PDF Export
-                pdf_bytes = generate_pdf(sd_item)
-                st.download_button(
-                    label="📥 PDF",
-                    data=pdf_bytes,
-                    file_name=f"{cr_key}_Solution_Document.pdf",
-                    mime="application/pdf",
-                    key=f"dl_kb_{cr_key}",
-                    use_container_width=True
-                )
+                word_bytes = fill_word_template(sd_item)
+                if word_bytes:
+                    st.download_button(
+                        label="📥 Word Doc",
+                        data=word_bytes,
+                        file_name=f"{cr_key}_Solution_Document.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key=f"dl_kb_{cr_key}",
+                        use_container_width=True
+                    )
             
             with col2:
-                # Toggle Edit Mode
                 is_editing = st.session_state.kb_edit_mode.get(cr_key, False)
-                if st.button("✏️ Edit" if not is_editing else "❌ Cancel", key=f"edit_toggle_{cr_key}", use_container_width=True):
+                if st.button("✏️ Edit JSON" if not is_editing else "❌ Cancel", key=f"edit_toggle_{cr_key}", use_container_width=True):
                     st.session_state.kb_edit_mode[cr_key] = not is_editing
                     st.rerun()
             
             with col3:
-                # Delete Document
                 if st.button("🗑️ Delete", key=f"del_{cr_key}", type="primary", use_container_width=True):
-                    # Remove from session state and save to JSON
                     del st.session_state.knowledge_base[cr_key]
                     with open("knowledge_base.json", "w", encoding="utf-8") as f:
                         json.dump(st.session_state.knowledge_base, f, indent=4)
                     
-                    # Clean up edit mode state if it exists
                     if cr_key in st.session_state.kb_edit_mode:
                         del st.session_state.kb_edit_mode[cr_key]
                         
@@ -589,10 +628,8 @@ else:
 
             st.markdown("---")
             
-            # Display or Edit View
             if st.session_state.kb_edit_mode.get(cr_key, False):
-                # Edit Mode View
-                new_sd_content = st.text_area("Edit Document Markdown:", value=sd_item, height=400, key=f"text_area_{cr_key}")
+                new_sd_content = st.text_area("Edit JSON Document:", value=sd_item, height=400, key=f"text_area_{cr_key}")
                 
                 if st.button("💾 Save Changes", key=f"save_edit_{cr_key}", type="primary"):
                     st.session_state.knowledge_base[cr_key] = new_sd_content
@@ -602,5 +639,4 @@ else:
                     st.success("Changes saved!")
                     st.rerun()
             else:
-                # Standard Markdown View
-                st.markdown(sd_item)
+                display_human_readable_doc(sd_item)
