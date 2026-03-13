@@ -292,7 +292,13 @@ YOUR MANDATE AND STRICT RULES:
         "implementation_plan": "Step-by-step implementation plan",
         "archival_policy": "Archival policy and performance testing requirements",
         "business_acceptance_scenario": "Business acceptance and UAT scenarios",
-        "references": "Any references or 'None provided'"
+        "references": "Any references or 'None provided'",
+        "abbr_1_term": "1st abbreviation found in text (or 'N/A' if none)",
+        "abbr_1_def": "Definition of 1st abbreviation (or 'N/A')",
+        "abbr_2_term": "2nd abbreviation found in text (or 'N/A')",
+        "abbr_2_def": "Definition of 2nd abbreviation (or 'N/A')",
+        "abbr_3_term": "3rd abbreviation found in text (or 'N/A')",
+        "abbr_3_def": "Definition of 3rd abbreviation (or 'N/A')"
     }
 4.  **Depth and Comprehensiveness (FOR CBS ONLY):** Within the JSON values, elaborate extensively. Provide highly detailed explanations of the CBS business logic and technical implementations. If you need line breaks inside your text, you MUST use the literal escaped string "\\n" (backslash n). Do not use actual unescaped line breaks or carriage returns.
 5.  **STRICT GROUNDING:** ONLY use the information explicitly provided in the uploaded documents. Do not invent outside the context.
